@@ -1,0 +1,222 @@
+print("Step 1: Reading csv file and returning it into a DataFrame")
+import pandas as pd
+df_csv = pd.read_csv('/scratch/zxx091000/fromMZ/Databases/Ecoli/Roary.April2024/results/gene_presence_absence.refmt.csv')
+print(df_csv)
+
+
+
+print("Step2: Filtering rows with No.isolates to be 43")
+df = df_csv
+filtered_df = df[df['No. isolates'] == 43]
+print(filtered_df)
+
+
+
+print("Step3:Listing the names of all the genes where No. isolates = 43")
+# Assuming 'Gene' is the column containing gene names
+gene_names = filtered_df['Gene'].tolist()
+print(gene_names)
+
+
+
+
+print("Step 4:Returns a list of complete paths to all GFF files within a directory")
+import os
+def get_all_gff_file_paths(directory):
+  """
+  Returns a list of complete paths to all GFF files within a directory.
+
+  Args:
+    directory: The directory to search for GFF files.
+
+  Returns:
+    A list of strings, each representing a complete path to a GFF file.
+  """
+  gff_file_paths = []
+  for root, _, files in os.walk(directory):
+    for file in files:
+      if file.endswith('.gff'):
+        gff_file_paths.append(os.path.join(root, file))
+  return gff_file_paths
+print(get_all_gff_file_paths('/scratch/zxx091000/fromMZ/Databases/Ecoli/Roary.April2024/results/fixed_input_files'))
+
+
+
+
+
+print("Step5:Read a gff file from a path and return a data frame. Also adding attributes into the column")
+def parse_gff_to_df(gff_file):
+  """
+  Parses a GFF file and returns a pandas DataFrame of features.
+
+  Args:
+    gff_file: Path to the GFF file.
+
+  Returns:
+    A pandas DataFrame representing the features in the GFF file.
+  """
+  features = []
+  with open(gff_file, 'r') as f:
+    for line in f:
+      if line.startswith('#'):
+        continue
+      fields = line.strip().split('\t')
+      if len(fields) >= 9:
+        seqid, source, ftype, start, end, score, strand, phase, attributes = fields[:9]
+        attr_dict = {}
+        for attr in attributes.split(';'):
+          if '=' in attr:
+            key, value = attr.split('=')
+            attr_dict[key] = value
+
+        feature = {
+            'seqid': seqid,
+            'source': source,
+            'type': ftype,
+            'start': int(start),
+            'end': int(end),
+            'score': score,
+            'strand': strand,
+            'phase': phase,
+            **attr_dict  # Add attributes as columns
+        }
+        features.append(feature)
+  return pd.DataFrame(features)
+
+
+
+
+
+print("Step 6: Define the extract gene data function")
+def extract_gene_data(df_gff, gene_name, neighboring_genes_count=6):
+  """
+  Extracts upstream and downstream genes for a given gene from a GFF DataFrame.
+
+  Args:
+    df_gff: A pandas DataFrame representing the GFF file.
+    gene_name: The name of the gene to find upstream and downstream genes for.
+    neighboring_genes_count: The number of neighboring genes to extract on each side.
+
+  Returns:
+    A tuple containing upstream_genes and downstream_genes DataFrames.
+  """
+  # Finding the row with the given gene
+  row = df_gff[df_gff['gene'].str.contains(gene_name, regex=False, na=False)]
+  
+  if not row.empty:
+    index = row.index[0]
+
+    # Finding the indices of upstream and downstream genes
+    upstream_indices = range(max(0, index - neighboring_genes_count), index)
+    downstream_indices = range(index + 1, min(len(df_gff), index + neighboring_genes_count + 1))
+
+    # Extracting the upstream and downstream genes
+    upstream_genes = df_gff.loc[upstream_indices]
+    downstream_genes = df_gff.loc[downstream_indices]
+
+    return upstream_genes, downstream_genes, row
+  else:
+    print(f"Gene '{gene_name}' not found in the GFF file.")
+    return None, None, None
+
+
+
+
+## CHANGE THE GENE NAME HERE
+print("Step7: Adding filter to the gene names, Extracting the gene information upstream and downstream genes and writing into a csv")
+import os
+import numpy as np  # Importing numpy to add NaN for the blank line
+
+gff_directory = '/scratch/zxx091000/fromMZ/Databases/Ecoli/Roary.April2024/results/fixed_input_files'
+gff_file_paths = get_all_gff_file_paths(gff_directory)
+gene_names_to_filter = ['phnP']  # Specify the gene name to filter for
+columns = ["seqid", "source", "type", "start", "end", "strand", "ID", "gene"]
+complete_gene_info = []
+
+for gff_file_path in gff_file_paths:
+    try:
+        df_gff = parse_gff_to_df(gff_file_path)
+        print(f"Processed GFF file: {gff_file_path}")
+
+        # Handling Strip quotes from gene names to handle cases like "pdeG" present in some of the files
+        df_gff['gene'] = df_gff['gene'].astype(str).str.strip('"')
+
+        for gene_name_to_filter in gene_names_to_filter:
+
+            # Ensure extract_gene_data returns only 3 values
+            result = extract_gene_data(df_gff, gene_name_to_filter)
+            if len(result) != 3:
+                raise ValueError(f"Expected 3 values from extract_gene_data, but got {len(result)}")
+
+            upstream_genes, downstream_genes, phnP_row = result   ## CHANGE THE GENE NAME HERE
+
+            if upstream_genes is not None and downstream_genes is not None:
+                # Adding upstream genes to the list in their correct order (closest upstream first)
+                for i, (index, row) in enumerate(upstream_genes.iterrows(), start=1):
+                    gene_info = {
+                        'gene_name': row.get('gene', ''),
+                        'gff_file': os.path.basename(gff_file_path),
+                        'relationship': 'upstream',
+                        'position': i,  # Numbering for upstream genes starting from closest to the gene searching for
+                        'seqid': row['seqid'],
+                        'source': row['source'],
+                        'type': row['type'],
+                        'start': row['start'],
+                        'end': row['end'],
+                        'strand': row['strand'],
+                        'ID': row.get('ID', '')
+                    }
+                    complete_gene_info.append(gene_info)
+
+                # Adding the central labelled as self. Also CHANGE THE GENE NAME HERE
+                for index, row in phnP_row.iterrows():
+                    gene_info = {
+                        'gene_name': row.get('gene', ''),
+                        'gff_file': os.path.basename(gff_file_path),
+                        'relationship': 'self',
+                        'position': '',  # No numbering for the gene itself
+                        'seqid': row['seqid'],
+                        'source': row['source'],
+                        'type': row['type'],
+                        'start': row['start'],
+                        'end': row['end'],
+                        'strand': row['strand'],
+                        'ID': row.get('ID', '')
+                    }
+                    complete_gene_info.append(gene_info)
+
+                # Adding downstream genes to the list in their original order (closest downstream first)
+                for i, (index, row) in enumerate(downstream_genes.iterrows(), start=1):
+                    gene_info = {
+                        'gene_name': row.get('gene', ''),
+                        'gff_file': os.path.basename(gff_file_path),
+                        'relationship': 'downstream',
+                        'position': i,  # Numbering for downstream genes starting from closest to pdeG
+                        'seqid': row['seqid'],
+                        'source': row['source'],
+                        'type': row['type'],
+                        'start': row['start'],
+                        'end': row['end'],
+                        'strand': row['strand'],
+                        'ID': row.get('ID', '')
+                    }
+                    complete_gene_info.append(gene_info)
+
+        # Appending a blank row to separate data for each GFF file**
+        blank_row = {col: np.nan for col in ['gene_name', 'gff_file', 'relationship', 'position', 'seqid', 'source', 'type', 'start', 'end', 'strand', 'ID']}
+        complete_gene_info.append(blank_row)
+
+    except ValueError as ve:   
+       print(f"ValueError in {gff_file_path}: {ve}")
+    except Exception as e:
+        print(f"Error processing GFF file {gff_file_path}: {e}")
+
+# Creating a DataFrame from the collected gene data
+gene_df = pd.DataFrame(complete_gene_info)
+
+# Saving the DataFrame to a CSV file
+gene_df.to_csv('phnP_gene_information.csv', index=False)
+
+print("Gene information written to phnP_gene_information.csv")
+
+
