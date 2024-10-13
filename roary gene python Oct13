@@ -1,0 +1,266 @@
+import os
+import pandas as pd
+import csv
+
+
+# STEP 1: Read a CSV file and return into a DataFrame
+df = pd.read_csv('gene_presence_absence.refmt.csv')
+
+
+
+
+
+# STEP 2: Filtering genes with No. isolates equal to 43
+df_filtered_isolates = df[df['No. isolates'] == 43]
+
+
+
+
+
+# STEP 3: Working with only genes and strains columns
+columns = ["Gene", "CFT073", "ECOR11_PROKKA", "ECOR14_PROKKA", "ECOR16_PROKKA",
+           "ECOR23_PROKKA", "ECOR44_PROKKA", "ECOR47_PORKKA", "ECOR48_PROKKA",
+           "ECOR49_PROKKA", "ECOR4_PROKKA", "ECOR50_PROKKA", "ECOR51_PROKKA",
+           "ECOR52_PROKKA", "ECOR53_PROKKA", "ECOR54_PROKKA", "ECOR55_PROKKA",
+           "ECOR56_PROKKA", "ECOR60_PROKKA", "ECOR61_PROKKA", "ECOR62_PROKKA",
+           "ECOR64_PROKKA", "ECOR66_PROKKA", "ECOR6_PROKKA", "ECOR8_PROKKA",
+           "KE21", "KE24", "KE25", "KE26", "KE4", "KE40", "KE41", "KE46",
+           "KE47", "KE48_PROKKA", "KE50", "KE51", "KE54", "KE55", "KE58",
+           "LRPF007", "LRPF62", "MG1655", "UTI89", "W3110"]
+df_filtered_isolates_columns = df_filtered_isolates[columns]
+
+
+
+
+
+
+# STEP 4: Iterating through rows to return missing gene data
+missing_gene_data = []
+for index, row in df_filtered_isolates_columns.iterrows():
+    gene_name = row['Gene']
+    for column in df_filtered_isolates_columns.columns:
+        if column != 'Gene' and pd.isnull(row[column]):
+            missing_gene_data.append((gene_name, column))
+
+
+
+
+
+
+# STEP 5: Writing the missing_gene_data in CSV
+with open('missing_gene_data.csv', 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(['Gene', 'Strain'])  # Write header row
+    writer.writerows(missing_gene_data)
+
+print("Missing gene data written to missing_gene_data.csv")
+
+
+
+
+
+
+# STEP 6: Storing strain data for each gene
+gene_strain_data = []
+for index, row in df_filtered_isolates_columns.iterrows():
+    gene_name = row['Gene']
+    strain_data = []
+    for column in df_filtered_isolates_columns.columns:
+        if column != 'Gene':
+            strain_data.append((column, row[column]))
+    gene_strain_data.append((gene_name, strain_data))
+
+
+
+
+
+
+
+
+# STEP 7: Retrieve all GFF file paths within the directory
+def get_all_gff_file_paths(directory):
+    gff_file_paths = []
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith('.gff'):
+                gff_file_paths.append(os.path.join(root, file))
+    return gff_file_paths
+
+# Update directory path as required
+gff_directory = '/scratch/zxx091000/fromMZ/Databases/Ecoli/Roary.April2024/results/fixed_input_files'
+print(get_all_gff_file_paths(gff_directory))
+
+
+
+
+
+
+
+
+
+# STEP 8: Parsing GFF file to DataFrame
+def parse_gff_to_df(gff_file):
+    features = []
+    with open(gff_file, 'r') as f:
+        for line in f:
+            if line.startswith('#'):
+                continue
+            fields = line.strip().split('\t')
+            if len(fields) >= 9:
+                seqid, source, ftype, start, end, score, strand, phase, attributes = fields[:9]
+                attr_dict = {}
+                for attr in attributes.split(';'):
+                    if '=' in attr:
+                        key, value = attr.split('=')
+                        attr_dict[key] = value
+
+                feature = {
+                    'seqid': seqid,
+                    'source': source,
+                    'type': ftype,
+                    'start': int(start),
+                    'end': int(end),
+                    'score': score,
+                    'strand': strand,
+                    'phase': phase,
+                    **attr_dict  # Add attributes as columns
+                }
+                features.append(feature)
+    return pd.DataFrame(features)
+
+
+
+
+
+
+
+#STEP9: Extraxting upstream and downstream genes
+def extract_data_upstream_downstream(id, gff_df, strain, neighbors_count=5):
+    # Sanitize 'ID' and 'locus_tag' columns to remove extra spaces and quotes
+    if 'ID' in gff_df.columns:
+        gff_df['ID'] = gff_df['ID'].str.strip('"').str.strip()
+    if 'locus_tag' in gff_df.columns:
+        gff_df['locus_tag'] = gff_df['locus_tag'].str.strip('"').str.strip()
+
+    # Use loose matching to find the ID in either 'ID' or 'locus_tag' columns
+    id_matches = gff_df[gff_df['ID'].fillna('').str.contains(id, na=False, case=False)] if 'ID' in gff_df.columns else pd.DataFrame()
+    locus_tag_matches = gff_df[gff_df['locus_tag'].fillna('').str.contains(id, na=False, case=False)] if 'locus_tag' in gff_df.columns else pd.DataFrame()
+
+    # Combine matches from ID and locus_tag columns
+    row_with_id = pd.concat([id_matches, locus_tag_matches]).drop_duplicates()
+
+    # Check if any matches were found
+    if not row_with_id.empty:
+        target_index = row_with_id.index[0]  # Get the index of the target gene
+
+        # --- Upstream genes ---
+        upstream_genes = []
+        upstream_genes_index = target_index - 1
+        while len(upstream_genes) < neighbors_count and upstream_genes_index >= 0:
+            if gff_df.iloc[upstream_genes_index]['type'] == 'CDS':  # Filter for CDS genes
+                upstream_genes.append(gff_df.iloc[upstream_genes_index])
+            upstream_genes_index -= 1
+
+        upstream_genes = pd.DataFrame(upstream_genes).iloc[::-1]  # Reverse to maintain the correct order
+
+        # --- Downstream genes ---
+        downstream_genes = []
+        downstream_genes_index = target_index + 1
+        while len(downstream_genes) < neighbors_count and downstream_genes_index < len(gff_df):
+            if gff_df.iloc[downstream_genes_index]['type'] == 'CDS':  # Filter for CDS genes
+                downstream_genes.append(gff_df.iloc[downstream_genes_index])
+            downstream_genes_index += 1
+
+        downstream_genes = pd.DataFrame(downstream_genes)
+
+        # Assign positions: upstream as negative, downstream as positive
+        if not upstream_genes.empty:
+            upstream_genes['Position'] = range(-len(upstream_genes), 0)
+        if not downstream_genes.empty:
+            downstream_genes['Position'] = range(1, len(downstream_genes) + 1)
+
+        # Extract the target gene (self gene)
+        id_column = 'ID' if 'ID' in gff_df.columns else 'locus_tag'
+        self_gene = gff_df.loc[target_index][[id_column, 'type', 'gene']]
+        self_gene['Position'] = 0  # Assign position 0 to the target gene
+
+        # Combine upstream, self, and downstream genes
+        combined_genes = pd.concat([upstream_genes, pd.DataFrame([self_gene]), downstream_genes], ignore_index=True)
+
+        # Fill missing 'ID' with 'Missing_ID'
+        combined_genes['ID'] = combined_genes['ID'].fillna('Missing_ID')
+
+         # Rename 'locus_tag' to 'ID' if needed
+        if 'locus_tag' in combined_genes.columns:
+            combined_genes.rename(columns={'locus_tag': 'ID'}, inplace=True)
+
+        # Select relevant columns: Position, ID, gene, type, strain
+        combined_genes = combined_genes[['Position', 'gene','ID']]
+        combined_genes['strain'] = strain
+        return combined_genes
+    else:
+        print(f"No row found with ID: {id} for strain: {strain}")
+        return None
+
+
+
+
+# STEP 10: Write the data into a CSV file
+directory = '/scratch/zxx091000/fromMZ/Databases/Ecoli/Roary.April2024/results/fixed_input_files'
+
+with open('upstream_downstream.csv', 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    
+    # Write the header row with the correct column names
+    writer.writerow(['Position', 'gene', 'ID','strain'])  
+    
+    # Iterate over each gene and strain data
+    for gene, strain_data in gene_strain_data:
+        for strain, gene_id in strain_data:
+            try:
+                # Construct the path to the GFF file for each strain
+                full_path = os.path.join(directory, strain + ".gff")
+                gff_df = parse_gff_to_df(full_path)
+                
+                # Ensure 'locus_tag' is cleaned up from any extra quotes or spaces
+                if 'locus_tag' in gff_df.columns:
+                    gff_df['locus_tag'] = gff_df['locus_tag'].str.strip('"').str.strip()
+                
+                # Ensure that 'ID' column is present, if not, fallback to 'locus_tag'
+                if 'ID' not in gff_df.columns and 'locus_tag' in gff_df.columns:
+                    gff_df['ID'] = gff_df['locus_tag']
+                
+                # Fill missing 'ID' values with 'Missing_ID'
+                gff_df['ID'] = gff_df['ID'].fillna('Missing_ID')
+
+                # Get the combined DataFrame from the upstream/downstream extraction function
+                combined_genes = extract_data_upstream_downstream(gene_id, gff_df, strain, neighbors_count=5)
+
+                # Debug: Check that the 'ID' column is correctly populated
+                if combined_genes is not None:
+                    print(f"Writing data for strain: {strain}, gene ID: {gene_id}")
+                    print(combined_genes[['Position', 'gene', 'ID', 'strain']].head())  # Debugging line
+
+                    # Write the data to CSV
+                    combined_genes[['Position', 'gene', 'ID', 'strain']].to_csv(csvfile, header=False, index=False)
+                    
+
+            except Exception as e:
+                # Handle any errors that occur during processing
+                print(f"Error processing gene {gene}, strain {strain}: {e}")
+
+print("Upstream and downstream data written to genes_upstream_downstream.csv")
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
